@@ -187,6 +187,7 @@ Resources:
                   - transcribe:GetTranscriptionJob
                   - transcribe:ListTranscriptionJobs
                   - transcribe:DeleteTranscriptionJob
+                  - transcribe:StartStreamTranscription
                 Resource: '*'
 
   EC2InstanceProfile:
