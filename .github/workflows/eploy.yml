@@ -1,0 +1,240 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: eu-west-1
+  STACK_NAME: transcription-app-stack
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          npm test
+        continue-on-error: true
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    outputs:
+      webapp-ip: ${{ steps.get-outputs.outputs.webapp-ip }}
+      db-ip: ${{ steps.get-outputs.outputs.db-ip }}
+      bucket-name: ${{ steps.get-outputs.outputs.bucket-name }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation stack
+        id: deploy-stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/cloudformation.yml \
+            --stack-name ${{ env.STACK_NAME }} \
+            --parameter-overrides \
+              KeyName=${{ secrets.EC2_KEY_NAME }} \
+              DBPassword=${{ secrets.DB_PASSWORD }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Get stack outputs
+        id: get-outputs
+        run: |
+          WEBAPP_IP=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`WebAppPublicIP`].OutputValue' \
+            --output text)
+          
+          DB_IP=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`DBPrivateIP`].OutputValue' \
+            --output text)
+          
+          BUCKET_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`S3BucketName`].OutputValue' \
+            --output text)
+          
+          echo "webapp-ip=$WEBAPP_IP" >> $GITHUB_OUTPUT
+          echo "db-ip=$DB_IP" >> $GITHUB_OUTPUT
+          echo "bucket-name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          
+          echo "WebApp IP: $WEBAPP_IP"
+          echo "Database IP: $DB_IP"
+          echo "S3 Bucket: $BUCKET_NAME"
+
+      - name: Wait for EC2 instances
+        run: |
+          echo "Waiting 120 seconds for EC2 instances to initialize..."
+          sleep 120
+
+  deploy-application:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    needs: deploy-infrastructure
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build backend
+        run: |
+          cd backend
+          npm ci --production
+          tar -czf ../backend.tar.gz .
+
+      - name: Build frontend
+        env:
+          VITE_API_URL: http://${{ needs.deploy-infrastructure.outputs.webapp-ip }}:5000/api
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          tar -czf ../frontend.tar.gz dist
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ needs.deploy-infrastructure.outputs.webapp-ip }} >> ~/.ssh/known_hosts
+
+      - name: Deploy backend to EC2
+        run: |
+          scp backend.tar.gz ec2-user@${{ needs.deploy-infrastructure.outputs.webapp-ip }}:/home/ec2-user/app/
+          
+          ssh ec2-user@${{ needs.deploy-infrastructure.outputs.webapp-ip }} << 'EOF'
+            cd /home/ec2-user/app
+            tar -xzf backend.tar.gz
+            rm backend.tar.gz
+            
+            # Update environment variables
+            cat > .env << ENVEOF
+          PORT=5000
+          MONGODB_URI=mongodb://transcriptionuser:${{ secrets.DB_PASSWORD }}@${{ needs.deploy-infrastructure.outputs.db-ip }}:27017/transcription_db
+          AWS_REGION=${{ env.AWS_REGION }}
+          S3_BUCKET=${{ needs.deploy-infrastructure.outputs.bucket-name }}
+          NODE_ENV=production
+          ENVEOF
+            
+            # Start/restart application with PM2
+            pm2 delete transcription-backend || true
+            pm2 start src/server.js --name transcription-backend
+            pm2 save
+          EOF
+
+      - name: Deploy frontend to EC2
+        run: |
+          scp frontend.tar.gz ec2-user@${{ needs.deploy-infrastructure.outputs.webapp-ip }}:/tmp/
+          
+          ssh ec2-user@${{ needs.deploy-infrastructure.outputs.webapp-ip }} << 'EOF'
+            sudo rm -rf /usr/share/nginx/html/*
+            sudo tar -xzf /tmp/frontend.tar.gz -C /usr/share/nginx/html --strip-components=1
+            rm /tmp/frontend.tar.gz
+            sudo systemctl restart nginx
+          EOF
+
+      - name: Health check
+        run: |
+          echo "Waiting for application to start..."
+          sleep 30
+          
+          MAX_ATTEMPTS=10
+          ATTEMPT=0
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            if curl -f http://${{ needs.deploy-infrastructure.outputs.webapp-ip }}:5000/health; then
+              echo "✅ Application is healthy!"
+              exit 0
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS failed, retrying..."
+            sleep 10
+          done
+          
+          echo "❌ Health check failed after $MAX_ATTEMPTS attempts"
+          exit 1
+
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-infrastructure, deploy-application]
+    if: always()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Send SNS notification
+        run: |
+          if [ "${{ needs.deploy-application.result }}" == "success" ]; then
+            STATUS="✅ SUCCESS"
+            MESSAGE="Deployment completed successfully! Application is available at: http://${{ needs.deploy-infrastructure.outputs.webapp-ip }}"
+          else
+            STATUS="❌ FAILED"
+            MESSAGE="Deployment failed. Please check the GitHub Actions logs for details."
+          fi
+          
+          SNS_TOPIC_ARN=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`SNSTopicArn`].OutputValue' \
+            --output text)
+          
+          aws sns publish \
+            --topic-arn $SNS_TOPIC_ARN \
+            --subject "Deployment $STATUS - Transcription App" \
+            --message "$MESSAGE"

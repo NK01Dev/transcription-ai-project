@@ -1,0 +1,7 @@
+{
+  "name": "LinguistAI - Language Proficiency Tester",
+  "description": "An AI-powered language assessment tool that conducts real-time oral interviews to determine your CEFR fluency level (A1-C2) in English or French. Features real-time voice interaction and detailed feedback.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

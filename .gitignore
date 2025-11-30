@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+
+# Environment variables
+.env
+.env.local
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AWS
+*.pem
+*.key
+
+# Temporary files
+/tmp/
+*.tar.gz
