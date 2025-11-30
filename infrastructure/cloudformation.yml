@@ -11,6 +11,10 @@ Parameters:
     NoEcho: true
     Description: MongoDB password
     MinLength: 8
+DBUser:
+    Type: String
+    Description: MongoDB username
+    Default: 'admin'
 
 Resources:
   # VPC Configuration

@@ -80,6 +80,8 @@ This guide provides comprehensive documentation for testing the Backend API usin
 
 ### 3. Transcriptions (`/transcriptions`)
 
+> **Note**: Transcription endpoints currently do **NOT** require authentication. No Bearer token needed.
+
 #### Upload Audio for Transcription
 
 - **Method**: `POST`
@@ -87,12 +89,44 @@ This guide provides comprehensive documentation for testing the Backend API usin
 - **Body** (form-data):
   - `audio`: [Select File] (mp3, wav, m4a, etc.)
   - `language`: `en-US` (optional, default: en-US)
+- **Response**:
+  ```json
+  {
+    "message": "Transcription job started successfully",
+    "data": {
+      "id": "507f1f77bcf86cd799439011",
+      "jobName": "transcription-uuid-here",
+      "status": "IN_PROGRESS",
+      "language": "en-US"
+    }
+  }
+  ```
 
 #### Check Transcription Status
 
 - **Method**: `GET`
 - **URL**: `{{baseUrl}}/transcriptions/status/:id`
 - **Params**: Replace `:id` with the ID returned from the upload endpoint.
+- **Response**:
+  ```json
+  {
+    "data": {
+      "id": "507f1f77bcf86cd799439011",
+      "jobName": "transcription-uuid-here",
+      "status": "COMPLETED",
+      "transcriptionText": "This is the transcribed text...",
+      "language": "en-US",
+      "confidence": 0.95,
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:05:00.000Z",
+      "metadata": {
+        "fileName": "audio.mp3",
+        "fileSize": 1024000,
+        "mimeType": "audio/mpeg"
+      }
+    }
+  }
+  ```
 
 #### Get All Transcriptions
 
@@ -102,11 +136,41 @@ This guide provides comprehensive documentation for testing the Backend API usin
   - `page`: `1`
   - `limit`: `20`
   - `status`: `COMPLETED`
+- **Response**:
+  ```json
+  {
+    "data": [
+      {
+        "_id": "507f1f77bcf86cd799439011",
+        "jobName": "transcription-uuid-here",
+        "status": "COMPLETED",
+        "transcriptionText": "Transcribed text...",
+        "language": "en-US",
+        "createdAt": "2024-01-01T00:00:00.000Z"
+      }
+    ],
+    "pagination": {
+      "total": 50,
+      "page": 1,
+      "limit": 20,
+      "pages": 3
+    }
+  }
+  ```
 
 #### Delete Transcription
 
 - **Method**: `DELETE`
 - **URL**: `{{baseUrl}}/transcriptions/:id`
+- **Response**:
+  ```json
+  {
+    "message": "Transcription deleted successfully",
+    "data": {
+      "id": "507f1f77bcf86cd799439011"
+    }
+  }
+  ```
 
 ---
 
@@ -242,8 +306,17 @@ const checkStatus = (id) => {
   return api.get(`/transcriptions/status/${id}`);
 };
 
-const getAllTranscriptions = (page = 1, limit = 20) => {
-  return api.get(`/transcriptions?page=${page}&limit=${limit}`);
+const getAllTranscriptions = (page = 1, limit = 20, status = null) => {
+  const params = new URLSearchParams({
+    page: page.toString(),
+    limit: limit.toString(),
+  });
+
+  if (status) {
+    params.append("status", status);
+  }
+
+  return api.get(`/transcriptions?${params.toString()}`);
 };
 
 const deleteTranscription = (id) => {
@@ -260,6 +333,13 @@ const TranscriptionService = {
 export default TranscriptionService;
 ```
 
+> **Important**: Transcription endpoints return responses wrapped in a `data` property. When using these services, access the data like this:
+>
+> ```javascript
+> const response = await TranscriptionService.uploadAudio(file);
+> const transcriptionId = response.data.data.id; // Note the double .data
+> ```
+
 ### 5. Example Usage in Component (`src/components/Dashboard.js`)
 
 ```javascript
@@ -272,6 +352,7 @@ const Dashboard = () => {
   const [score, setScore] = useState("");
   const [message, setMessage] = useState("");
   const [user, setUser] = useState(undefined);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const currentUser = AuthService.getCurrentUser();
@@ -283,6 +364,7 @@ const Dashboard = () => {
   }, []);
 
   const fetchResults = async (role) => {
+    setLoading(true);
     try {
       let response;
       if (role === "admin") {
@@ -290,21 +372,42 @@ const Dashboard = () => {
       } else {
         response = await ResultService.getMyResults();
       }
+      // Results endpoints return data directly (not wrapped)
       setResults(response.data);
     } catch (error) {
-      console.error("Error fetching results", error);
+      console.error("Error fetching results:", error);
+      setMessage("Error loading results. Please try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true);
+    setMessage("");
+
     try {
-      await ResultService.submitResult(Number(score));
+      const numericScore = Number(score);
+
+      if (isNaN(numericScore) || numericScore < 0 || numericScore > 100) {
+        setMessage("Please enter a valid score between 0 and 100.");
+        setLoading(false);
+        return;
+      }
+
+      await ResultService.submitResult(numericScore);
       setMessage("Result submitted successfully!");
       setScore("");
       fetchResults(user.role); // Refresh list
     } catch (error) {
-      setMessage("Error submitting result.");
+      console.error("Error submitting result:", error);
+      setMessage(
+        error.response?.data?.message ||
+          "Error submitting result. Please try again."
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -334,14 +437,19 @@ const Dashboard = () => {
                 min="0"
                 max="100"
                 required
+                disabled={loading}
               />
             </div>
-            <button type="submit">Submit Result</button>
+            <button type="submit" disabled={loading}>
+              {loading ? "Submitting..." : "Submit Result"}
+            </button>
           </form>
           {message && (
             <p
               className={`message ${
-                message.includes("Error") ? "error" : "success"
+                message.includes("Error") || message.includes("valid")
+                  ? "error"
+                  : "success"
               }`}
             >
               {message}
@@ -356,7 +464,9 @@ const Dashboard = () => {
           {user.role === "admin" ? "All Student Results" : "Your Past Results"}
         </h3>
 
-        {results.length === 0 ? (
+        {loading ? (
+          <p>Loading...</p>
+        ) : results.length === 0 ? (
           <p>No results found.</p>
         ) : (
           <table>
@@ -402,3 +512,154 @@ const Dashboard = () => {
 
 export default Dashboard;
 ```
+
+---
+
+## 📋 Important Notes
+
+### Response Format Differences
+
+The API has **two different response formats** depending on the endpoint:
+
+#### Auth & Results Endpoints (Direct Response)
+```javascript
+// Response structure
+{
+  "_id": "...",
+  "name": "...",
+  "email": "...",
+  // ... other fields directly in response
+}
+
+// Frontend usage
+const response = await AuthService.login(email, password);
+const userName = response.data.name; // Single .data
+```
+
+#### Transcription Endpoints (Wrapped Response)
+```javascript
+// Response structure
+{
+  "message": "...",
+  "data": {
+    "id": "...",
+    "status": "...",
+    // ... actual data nested inside
+  }
+}
+
+// Frontend usage
+const response = await TranscriptionService.uploadAudio(file);
+const transcriptionId = response.data.data.id; // Double .data
+```
+
+### Authentication Requirements
+
+| Endpoint Group | Authentication Required | Notes |
+|----------------|------------------------|-------|
+| `/api/auth/*` | Only `/auth/me` | Register and login are public |
+| `/api/results/*` | ✅ Yes | All endpoints require Bearer token |
+| `/api/transcriptions/*` | ❌ No | Currently public (no auth middleware) |
+
+> **Security Recommendation**: Consider adding authentication to transcription endpoints in production to prevent unauthorized usage and track user activity.
+
+### Error Handling Best Practices
+
+Always wrap API calls in try-catch blocks and handle errors gracefully:
+
+```javascript
+try {
+  const response = await SomeService.someMethod();
+  // Handle success
+} catch (error) {
+  console.error("Error:", error);
+  
+  // Access backend error message
+  const errorMessage = error.response?.data?.message || 
+                       error.response?.data?.error || 
+                       "An unexpected error occurred";
+  
+  // Display to user
+  setMessage(errorMessage);
+}
+```
+
+### CORS Configuration
+
+Ensure your backend has CORS enabled for your frontend origin. The backend currently uses:
+
+```javascript
+app.use(cors()); // Allows all origins
+```
+
+For production, restrict to specific origins:
+
+```javascript
+app.use(cors({
+  origin: 'https://your-frontend-domain.com',
+  credentials: true
+}));
+```
+
+### File Upload Considerations
+
+- **Max file size**: 100MB (configured in multer)
+- **Allowed formats**: mp3, wav, mp4, m4a, ogg, webm, flac
+- **Content-Type**: Must be `multipart/form-data` for file uploads
+- **Field name**: Audio file must be sent as `audio` field in FormData
+
+### Pagination
+
+Transcription endpoints support pagination:
+
+```javascript
+// Default values
+const page = 1;
+const limit = 20;
+
+// Usage
+const response = await TranscriptionService.getAllTranscriptions(page, limit);
+const { data, pagination } = response.data;
+
+console.log(`Showing ${data.length} of ${pagination.total} results`);
+console.log(`Page ${pagination.page} of ${pagination.pages}`);
+```
+
+### Status Values
+
+**Result Status** (auto-calculated):
+- `pass`: score >= 50
+- `fail`: score < 50
+
+**Transcription Status**:
+- `PENDING`: Job created but not started
+- `IN_PROGRESS`: AWS Transcribe job running
+- `COMPLETED`: Transcription finished successfully
+- `FAILED`: Transcription failed (check `errorMessage` field)
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+1. **401 Unauthorized**: Token expired or invalid. Re-login to get a new token.
+2. **CORS Error**: Backend CORS not configured for your frontend origin.
+3. **File Upload 400 Error**: Check file type is supported and size is under 100MB.
+4. **Cannot read property 'data'**: Check if you're accessing the correct response structure (wrapped vs direct).
+5. **Network Error**: Ensure backend is running on `http://localhost:5000`.
+
+### Testing Checklist
+
+- [ ] Backend server is running (`npm start` in backend directory)
+- [ ] MongoDB is connected (check server logs)
+- [ ] AWS credentials are configured (for transcription features)
+- [ ] CORS is enabled for your frontend origin
+- [ ] Token is stored in localStorage after login
+- [ ] API base URL matches your backend URL
+
+---
+
+**Last Updated**: 2025-11-30  
+**API Version**: 1.0  
+**Backend Framework**: Express.js + MongoDB + AWS Transcribe
