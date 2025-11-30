@@ -16,16 +16,16 @@ const uploadAudio = (file: File, language = "en-US"): Promise<TranscriptionRecor
 
   // We use fetch directly here because our generic api wrapper might enforce JSON headers
   const token = localStorage.getItem("token");
-  return fetch("http://localhost:5000/api/transcriptions/upload", {
+  return fetch(`${import.meta.env.VITE_API_URL || "http://localhost:5000/api"}/transcriptions/upload`, {
     method: "POST",
     headers: {
       ...(token ? { "Authorization": `Bearer ${token}` } : {})
     },
     body: formData,
   }).then(async res => {
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || "Upload failed");
-      return data;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Upload failed");
+    return data;
   });
 };
 
