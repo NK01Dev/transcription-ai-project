@@ -11,7 +11,7 @@ Parameters:
     NoEcho: true
     Description: MongoDB password
     MinLength: 8
-DBUser:
+  DBUser:
     Type: String
     Description: MongoDB username
     Default: 'admin'
