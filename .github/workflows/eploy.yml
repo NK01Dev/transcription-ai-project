@@ -22,9 +22,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          node-version: '20'
+          # Lignes à SUPPRIMER :
+          # cache: 'npm'
+          # cache-dependency-path: backend/package-lock.json
 
       - name: Install backend dependencies
         run: |
@@ -39,12 +40,12 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          cd frontend
+          cd linguistai-frontend
           npm ci
 
       - name: Build frontend
         run: |
-          cd frontend
+          cd linguistai-frontend
           npm run build
 
   deploy-infrastructure:
@@ -124,7 +125,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Build backend
         run: |
@@ -136,7 +137,7 @@ jobs:
         env:
           VITE_API_URL: http://${{ needs.deploy-infrastructure.outputs.webapp-ip }}:5000/api
         run: |
-          cd frontend
+          cd linguistai-frontend
           npm ci
           npm run build
           tar -czf ../frontend.tar.gz dist
