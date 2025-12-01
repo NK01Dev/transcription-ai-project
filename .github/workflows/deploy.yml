@@ -145,13 +145,15 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
+          # Use 'cat' with a here-document to safely handle multi-line private key
           cat > ~/.ssh/id_rsa <<EOF
           ${{ secrets.EC2_PRIVATE_KEY }}
           EOF
+          # Set proper permissions
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ needs.deploy-infrastructure.outputs.webapp-ip }} >> ~/.ssh/known_hosts          chmod 600 ~/.ssh/id_rsa
+          # Add the host key to known_hosts
           ssh-keyscan -H ${{ needs.deploy-infrastructure.outputs.webapp-ip }} >> ~/.ssh/known_hosts
-
+          
       - name: Deploy backend to EC2
         run: |
           scp backend.tar.gz ec2-user@${{ needs.deploy-infrastructure.outputs.webapp-ip }}:/home/ec2-user/app/
