@@ -12,58 +12,74 @@ Ce projet permet aux utilisateurs d'enregistrer ou de télécharger des fichiers
 
 ### Architecture Globale
 
-┌─────────────────────────────────────────────────────────────────┐
-│                         Client Layer                            │
-│                                                                 │
-│              React Frontend (Vite + React)                      │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ HTTP/REST API
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Application Layer                          │
-│                                                                 │
-│  ┌──────────────────────┐      ┌──────────────────────┐       │
-│  │  Node.js/Express API │─────▶│  MongoDB Database    │       │
-│  │      Port 5000       │      │  Transcription Data  │       │
-│  └──────────┬───────────┘      └──────────────────────┘       │
-└─────────────┼──────────────────────────────────────────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     AWS Cloud Services                          │
-│                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
-│  │  Amazon S3   │  │    AWS       │  │  CloudWatch  │        │
-│  │Audio Storage │◀─│  Transcribe  │  │ Logs/Monitor │        │
-│  └──────────────┘  └──────────────┘  └──────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        A[React Frontend<br/>Vite + React]
+    end
+
+    subgraph "Application Layer"
+        B[Node.js/Express API<br/>Port 5000]
+        C[MongoDB Database<br/>Transcription Metadata]
+    end
+
+    subgraph "AWS Cloud Services"
+        D[Amazon S3<br/>Audio Storage]
+        E[AWS Transcribe<br/>Speech-to-Text]
+        F[CloudWatch<br/>Logs & Monitoring]
+    end
+
+    A -->|HTTP/REST API| B
+    B -->|Store Metadata| C
+    B -->|Upload Audio| D
+    B -->|Start Job| E
+    E -->|Read Audio| D
+    E -->|Write Results| D
+    B -->|Fetch Results| D
+    B -->|Send Logs| F
+    E -->|Send Metrics| F
+
+    style A fill:#61dafb,stroke:#333,stroke-width:2px,color:#000
+    style B fill:#68a063,stroke:#333,stroke-width:2px,color:#fff
+    style C fill:#4db33d,stroke:#333,stroke-width:2px,color:#fff
+    style D fill:#ff9900,stroke:#333,stroke-width:2px,color:#fff
+    style E fill:#ff9900,stroke:#333,stroke-width:2px,color:#fff
+    style F fill:#ff9900,stroke:#333,stroke-width:2px,color:#fff
+```
 
 ### Flux de Transcription
 
-User                Frontend            Backend API         S3            Transcribe        MongoDB
- │                     │                    │              │                 │               │
- │──Upload Audio──────▶│                    │              │                 │               │
- │                     │──POST /upload─────▶│              │                 │               │
- │                     │                    │──Upload──────▶│                 │               │
- │                     │                    │◀─S3 URI──────│                 │               │
- │                     │                    │─────────────────────────────────Save Metadata─▶│
- │                     │                    │──Start Job──────────────────────▶│               │
- │                     │                    │◀─IN_PROGRESS────────────────────│               │
- │                     │◀─Job ID & Status──│              │                 │               │
- │◀─Show "Processing"─│                    │              │                 │               │
- │                     │                    │              │                 │               │
- │                     │                    │              │◀─Read Audio─────│               │
- │                     │                    │              │─Write Results──▶│               │
- │                     │                    │              │                 │               │
- │──Check Status──────▶│                    │              │                 │               │
- │                     │──GET /status/:id──▶│              │                 │               │
- │                     │                    │──Get Job Status────────────────▶│               │
- │                     │                    │◀─COMPLETED──────────────────────│               │
- │                     │                    │──Fetch Transcript─▶│             │               │
- │                     │                    │◀─Transcript Data──│             │               │
- │                     │                    │─────────────────────────────────Update─────────▶│
- │                     │◀─Transcript Text───│              │                 │               │
- │◀─Display Result────│                    │              │                 │               │
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as Frontend
+    participant B as Backend API
+    participant S3 as Amazon S3
+    participant T as AWS Transcribe
+    participant DB as MongoDB
+
+    U->>F: Upload Audio File
+    F->>B: POST /api/transcriptions/upload
+    B->>S3: Upload Audio File
+    S3-->>B: S3 URI
+    B->>DB: Save Transcription Metadata
+    B->>T: Start Transcription Job
+    T-->>B: Job Started (IN_PROGRESS)
+    B-->>F: Job ID & Status
+    F-->>U: Show "Processing..."
+
+    Note over T,S3: AWS Transcribe processes audio
+
+    U->>F: Check Status
+    F->>B: GET /api/transcriptions/:id/status
+    B->>T: Get Job Status
+    T-->>B: Status: COMPLETED
+    B->>S3: Fetch Transcript JSON
+    S3-->>B: Transcript Data
+    B->>DB: Update with Transcript
+    B-->>F: Transcript Text + Confidence
+    F-->>U: Display Transcription
+```
 
 ---
 
@@ -731,17 +747,6 @@ aws cloudwatch get-metric-statistics \
 
 ---
 
-## 🛡️ Sécurité
-
-*   ❌ Ne jamais commiter le fichier `.env`
-*   ✅ Utilisez des variables d'environnement pour toutes les clés secrètes
-*   ✅ Configurez les règles CORS pour n'autoriser que votre domaine frontend en production
-*   ✅ Activez le chiffrement S3 pour les fichiers audio
-*   ✅ Utilisez IAM roles avec le principe du moindre privilège
-*   ✅ Activez MFA pour les comptes AWS
-*   ✅ Configurez des alarmes CloudWatch pour les activités suspectes
-
----
 
 ## 🔧 Dépannage
 
